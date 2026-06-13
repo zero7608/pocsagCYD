@@ -129,4 +129,51 @@ If you only want specific capcodes, like just your local fire district, add them
 
 ---
 
+## Running on a Raspberry Pi
+
+A Pi 4 works well for this. Raspberry Pi OS Lite 64-bit is the right image — no desktop needed. A few things that will get you if you skip them:
+
+**Blacklist the kernel DVB driver before anything else.**
+Linux ships a DVB driver that grabs the RTL-SDR the moment it's plugged in, which locks out rtl-sdr completely. Blacklist it first, before the dongle ever touches the Pi:
+
+```bash
+echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf
+sudo reboot
+```
+
+If you plug in the dongle and rtl_test says "kernel driver active," you missed this step.
+
+**Install Docker from the official script, not apt.**
+The version in the Pi OS repos is usually too old. Use this instead:
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+```
+
+Log out and back in after, or run `newgrp docker`.
+
+**Set up the udev rule and plugdev group before plugging in the dongle.**
+Same udev rule from the setup section above, plus add your user to the plugdev group so the rule actually applies:
+
+```bash
+sudo usermod -aG plugdev $USER
+```
+
+Log out and back in here too.
+
+**Verify the dongle works on the host before starting Docker.**
+Install `rtl-sdr` on the Pi and run a quick test:
+
+```bash
+sudo apt install rtl-sdr
+rtl_test -t
+```
+
+If it finds the device and reports samples, Docker will be able to reach it. If it fails here it will fail in the container too.
+
+**The Docker image builds natively on arm64.** No changes needed to the Dockerfile — debian:bookworm-slim and all the packages in it have arm64 builds.
+
+---
+
 *thinkleet.net*
