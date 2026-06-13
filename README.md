@@ -73,16 +73,28 @@ Same deal for the firmware. Add your WiFi credentials and MQTT broker info.
 
 ### 3. Start the Server
 
-First, make sure your host has the RTL-SDR udev rule in place. Linux assigns USB devices restrictive permissions by default, which means only root can talk to the dongle out of the box. A udev rule tells the kernel to loosen those permissions when the RTL-SDR is plugged in, so the container can reach it without needing to run as root.
+Two things to sort out on the host before the container will work.
 
-If you installed `rtl-sdr` on the host you probably already have this rule. If not, create it:
+**Blacklist the kernel DVB driver.**
+Linux ships a DVB driver that claims the RTL-SDR the moment it's plugged in. Since we're running rtl-sdr inside Docker rather than installing it on the host, nothing sets up the blacklist automatically. This applies to any Linux — not just Raspberry Pi:
+
+```bash
+echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf
+sudo reboot
+```
+
+Skip this and rtl_fm will fail with "kernel driver active" regardless of what else you do.
+
+**Set up the udev rule.**
+Linux assigns USB devices restrictive permissions by default, which means only root can talk to the dongle. A udev rule fixes that when the RTL-SDR is plugged in so the container can reach it without running as root:
 
 ```bash
 sudo sh -c 'echo SUBSYSTEM==\"usb\", ATTRS{idVendor}==\"0bda\", MODE=\"0664\", GROUP=\"plugdev\" > /etc/udev/rules.d/rtl-sdr.rules'
 sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG plugdev $USER
 ```
 
-The first command writes the rule. The second two reload udev so it takes effect immediately without a reboot. The vendor ID `0bda` is Realtek, which makes the RTL2832U chip in every RTL-SDR dongle.
+The vendor ID `0bda` is Realtek, which makes the RTL2832U chip inside every RTL-SDR dongle.
 
 Then plug in the RTL-SDR and start the container:
 
@@ -131,39 +143,21 @@ If you only want specific capcodes, like just your local fire district, add them
 
 ## Running on a Raspberry Pi
 
-A Pi 4 works well for this. Raspberry Pi OS Lite 64-bit is the right image — no desktop needed. A few things that will get you if you skip them:
+A Pi 4 works well for this. Raspberry Pi OS Lite 64-bit is the right image — no desktop needed.
 
-**Blacklist the kernel DVB driver before anything else.**
-Linux ships a DVB driver that grabs the RTL-SDR the moment it's plugged in, which locks out rtl-sdr completely. Blacklist it first, before the dongle ever touches the Pi:
-
-```bash
-echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf
-sudo reboot
-```
-
-If you plug in the dongle and rtl_test says "kernel driver active," you missed this step.
+The DVB blacklist and udev rule from the setup section above apply here too. Do those first, before the dongle touches the Pi.
 
 **Install Docker from the official script, not apt.**
-The version in the Pi OS repos is usually too old. Use this instead:
+The version in the Pi OS repos is usually too old:
 
 ```bash
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 ```
 
-Log out and back in after, or run `newgrp docker`.
-
-**Set up the udev rule and plugdev group before plugging in the dongle.**
-Same udev rule from the setup section above, plus add your user to the plugdev group so the rule actually applies:
-
-```bash
-sudo usermod -aG plugdev $USER
-```
-
-Log out and back in here too.
+Log out and back in after.
 
 **Verify the dongle works on the host before starting Docker.**
-Install `rtl-sdr` on the Pi and run a quick test:
 
 ```bash
 sudo apt install rtl-sdr
@@ -172,7 +166,7 @@ rtl_test -t
 
 If it finds the device and reports samples, Docker will be able to reach it. If it fails here it will fail in the container too.
 
-**The Docker image builds natively on arm64.** No changes needed to the Dockerfile — debian:bookworm-slim and all the packages in it have arm64 builds.
+**The Docker image builds natively on arm64.** No changes needed to the Dockerfile.
 
 ---
 
