@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
@@ -12,6 +13,7 @@
 PageStore store;
 Display   disp;
 
+WiFiMulti    wifiMulti;
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
 
@@ -72,11 +74,8 @@ void onMqttMessage(char* topic, byte* payload, unsigned int len) {
 
 // ── WiFi ─────────────────────────────────────────────────────────────────────
 void connectWifi() {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     uint8_t tries = 0;
-    while (WiFi.status() != WL_CONNECTED && tries < 40) {
-        delay(500);
+    while (wifiMulti.run(5000) != WL_CONNECTED && tries < 8) {
         tries++;
     }
     if (WiFi.status() == WL_CONNECTED) {
@@ -138,17 +137,23 @@ void getTimeStr(char* buf, size_t len) {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
+    delay(500);
+    Serial.println("[boot] start");
 
     // LED
     pinMode(LED_R, OUTPUT); pinMode(LED_G, OUTPUT); pinMode(LED_B, OUTPUT);
     ledOff();
+    Serial.println("[boot] LED ok");
 
     // Touch CS
     pinMode(T_CS, OUTPUT); digitalWrite(T_CS, HIGH);
     pinMode(T_IRQ, INPUT);
     touchSPI.begin(T_CLK, T_OUT, T_DIN, T_CS);
+    Serial.println("[boot] touch SPI ok");
 
+    Serial.println("[boot] display init...");
     disp.begin();
+    Serial.println("[boot] display ok");
 
     // Show boot screen
     char buf[24];
@@ -156,15 +161,25 @@ void setup() {
     disp.drawHeader(buf, 0.0, false);
     disp.drawPages(store, 0);
     disp.drawStatusBar(false, false, 0);
+    Serial.println("[boot] boot screen drawn");
 
+    WiFi.mode(WIFI_STA);
+    WIFI_NETWORKS(wifiMulti);
+    Serial.println("[boot] connecting WiFi...");
     connectWifi();
+    Serial.printf("[boot] WiFi %s  SSID: %s\n",
+        WiFi.status() == WL_CONNECTED ? "connected" : "FAILED",
+        WiFi.SSID().c_str());
+
+    Serial.printf("[boot] connecting MQTT: %s:%d\n", MQTT_BROKER, MQTT_PORT);
     connectMqtt();
+    Serial.println("[boot] MQTT connected");
 }
 
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
     // Reconnect guards
-    if (WiFi.status() != WL_CONNECTED) {
+    if (wifiMulti.run() != WL_CONNECTED) {
         connectWifi();
     }
     if (!mqtt.connected()) {
