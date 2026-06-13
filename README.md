@@ -129,10 +129,4 @@ If you only want specific capcodes, like just your local fire district, add them
 
 ---
 
-## Infrastructure Note
-
-The MQTT broker this publishes to is the same one powering [NEPAMesh](https://nepamesh.com). It just uses a different topic. No additional infrastructure needed if you are already running that stack.
-
----
-
 *thinkleet.net*
