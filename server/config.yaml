@@ -4,10 +4,10 @@
 # Find local freqs at: https://www.radioreference.com/db/browse/ctid/1898
 
 frequencies:
-  - 152.1200   # Lackawanna County Fire
-  - 152.8650   # Lackawanna County EMS
-  # - 155.3400
-  # - 159.1650
+  - 157.4500   # County Fire & EMS Paging
+  - 154.3550   # Back Mountain Dispatch / Mutual Aid
+  - 155.9400   # Alternative/Supplemental Paging
+  - 154.4300   # County Fire Paging
 
 dwell_seconds: 30      # seconds per frequency before hopping
 rtl_gain: 40           # RTL-SDR gain (0 = auto)

@@ -1,15 +1,37 @@
 #include "Display.h"
+#include "logo.h"
 
 // Row height for each page entry (time + 2 message lines)
 static const int ROW_H = 52;
 
 void Display::begin() {
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, HIGH);
     _tft.init();
-    _tft.setRotation(0);   // portrait
+    _tft.setRotation(0);
     _tft.fillScreen(C_BG);
     _tft.setTextDatum(TL_DATUM);
-    ledcAttach(TFT_BL, 5000, 8);
-    ledcWrite(TFT_BL, 220);
+}
+
+void Display::drawLogo() {
+    _tft.fillScreen(C_BG);
+    int x = (240 - LOGO_W) / 2;
+    int y = (320 - LOGO_H) / 2 - 18;
+
+    // Static keeps buf in BSS (DRAM); ESP32 SPI DMA can't read from flash (PROGMEM).
+    static uint16_t buf[LOGO_W * 16];
+    for (int row = 0; row < LOGO_H; row += 16) {
+        int rows = min(16, LOGO_H - row);
+        memcpy(buf, &logo_data[row * LOGO_W], LOGO_W * rows * sizeof(uint16_t));
+        _tft.pushImage(x, y + row, LOGO_W, rows, buf);
+    }
+
+    _tft.setTextFont(2);
+    _tft.setTextColor(C_DIM, C_BG);
+    _tft.setTextDatum(MC_DATUM);
+    _tft.drawString("thinkleet.net", 120, y + LOGO_H + 12);
+    _tft.drawString("waiting for pages...", 120, y + LOGO_H + 28);
+    _tft.setTextDatum(TL_DATUM);
 }
 
 void Display::drawHeader(const char* time_str, float freq_mhz, bool mqtt_ok) {
@@ -18,16 +40,13 @@ void Display::drawHeader(const char* time_str, float freq_mhz, bool mqtt_ok) {
     _tft.setTextSize(1);
     _tft.setTextFont(4);   // 26px
 
-    // Left: label
     _tft.drawString("POCSAG-RX", 4, 4);
 
-    // Right: clock
     _tft.setTextDatum(TR_DATUM);
     _tft.drawString(time_str, 236, 4);
     _tft.setTextDatum(TL_DATUM);
 
-    // Thin freq + status line just below header
-    _tft.fillRect(0, 32, 240, 14, 0x0200);  // very dark green
+    _tft.fillRect(0, 32, 240, 14, 0x0200);  // very dark green sub-header
     _tft.setTextFont(1);
     _tft.setTextSize(1);
     _tft.setTextColor(C_DIM, 0x0200);
@@ -46,75 +65,68 @@ void Display::drawHeader(const char* time_str, float freq_mhz, bool mqtt_ok) {
     _pageAreaH = 254;  // 320 - 46 - 20
 }
 
-void Display::drawPageEntry(TFT_eSprite& spr, const Page* p, int y, bool newest) {
+void Display::drawPageEntry(const Page* p, int y, bool newest) {
     uint16_t tc = newest ? C_AMBER : C_DIM;
     uint16_t mc = newest ? C_GREEN : C_DIM;
 
-    // Divider rule
-    spr.drawFastHLine(0, y, 240, C_DIVIDER);
+    _tft.drawFastHLine(0, y, 240, C_DIVIDER);
     y += 2;
 
-    // Time + capcode line
-    spr.setTextFont(1);
-    spr.setTextSize(1);
-    spr.setTextColor(tc, C_BG);
+    _tft.setTextFont(1);
+    _tft.setTextSize(1);
+    _tft.setTextColor(tc, C_BG);
     char buf[32];
     snprintf(buf, sizeof(buf), "%s  #%s", p->time_str, p->capcode);
-    spr.drawString(buf, 2, y);
+    _tft.drawString(buf, 2, y);
 
-    // Baud badge (right-aligned)
     snprintf(buf, sizeof(buf), "%u", p->baud);
-    spr.setTextDatum(TR_DATUM);
-    spr.setTextColor(C_DIVIDER, C_BG);
-    spr.drawString(buf, 238, y);
-    spr.setTextDatum(TL_DATUM);
+    _tft.setTextDatum(TR_DATUM);
+    _tft.setTextColor(C_DIVIDER, C_BG);
+    _tft.drawString(buf, 238, y);
+    _tft.setTextDatum(TL_DATUM);
 
     y += 12;
 
-    // Message — wrap at ~28 chars per line, 2 lines max
-    spr.setTextColor(mc, C_BG);
+    _tft.setTextColor(mc, C_BG);
     String m(p->msg);
     if (m.length() > 28) {
-        // Find a space near char 28 to break on
         int brk = 28;
         for (int i = 28; i > 20; i--) {
             if (m[i] == ' ') { brk = i; break; }
         }
-        spr.drawString(m.substring(0, brk), 2, y);
+        _tft.drawString(m.substring(0, brk), 2, y);
         y += 13;
         String rest = m.substring(brk + 1);
         if (rest.length() > 28) rest = rest.substring(0, 27) + "~";
-        spr.drawString(rest, 2, y);
+        _tft.drawString(rest, 2, y);
     } else {
-        spr.drawString(m, 2, y);
+        _tft.drawString(m, 2, y);
     }
 }
 
 void Display::drawPages(const PageStore& store, uint8_t scroll_offset) {
-    _spr.createSprite(240, _pageAreaH);
-    _spr.fillSprite(C_BG);
-    _spr.setTextDatum(TL_DATUM);
+    // Clear page area directly — avoids a 120KB sprite allocation that fails
+    // with WiFi heap pressure.
+    _tft.fillRect(0, _pageAreaY, 240, _pageAreaH, C_BG);
+    _tft.setTextDatum(TL_DATUM);
 
-    int y = 0;
+    int y = _pageAreaY;
     uint8_t drawn = 0;
     uint8_t n = store.count();
 
-    for (uint8_t i = scroll_offset; i < n && y < _pageAreaH; i++) {
+    for (uint8_t i = scroll_offset; i < n && y < _pageAreaY + _pageAreaH; i++) {
         const Page* p = store.get(i);
         if (!p) break;
-        drawPageEntry(_spr, p, y, (i == 0 && scroll_offset == 0));
+        drawPageEntry(p, y, (i == 0 && scroll_offset == 0));
         y += ROW_H;
         drawn++;
     }
 
     if (drawn == 0) {
-        _spr.setTextFont(2);
-        _spr.setTextColor(C_DIVIDER, C_BG);
-        _spr.drawString("waiting for pages...", 20, _pageAreaH / 2 - 8);
+        _tft.setTextFont(2);
+        _tft.setTextColor(C_DIVIDER, C_BG);
+        _tft.drawString("waiting for pages...", 20, _pageAreaY + _pageAreaH / 2 - 8);
     }
-
-    _spr.pushSprite(0, _pageAreaY);
-    _spr.deleteSprite();
 }
 
 void Display::drawStatusBar(bool wifi_ok, bool mqtt_ok, uint8_t unread) {
@@ -142,7 +154,6 @@ void Display::drawStatusBar(bool wifi_ok, bool mqtt_ok, uint8_t unread) {
 }
 
 void Display::flashNew() {
-    // Quick amber flash at top of page area to signal new message
     for (int i = 0; i < 2; i++) {
         _tft.fillRect(0, _pageAreaY, 240, 3, C_AMBER);
         delay(80);

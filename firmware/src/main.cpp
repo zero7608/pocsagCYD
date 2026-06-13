@@ -18,6 +18,7 @@ WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
 
 volatile bool newPage     = false;
+bool          bootScreen  = true;
 float         currentFreq = 0.0f;
 uint8_t       scrollOffset = 0;
 
@@ -65,11 +66,11 @@ void onMqttMessage(char* topic, byte* payload, unsigned int len) {
 
     currentFreq = p.freq_mhz;
     store.push(p);
-    scrollOffset = 0;   // jump to top on new page
+    scrollOffset = 0;
+    bootScreen = false;
     newPage = true;
 
-    // Flash amber LED
-    ledColor(true, false, false);  // brief red flash (active low means this is red)
+    ledColor(true, false, false);  // active-low: R pin LOW = red on
 }
 
 // ── WiFi ─────────────────────────────────────────────────────────────────────
@@ -155,13 +156,8 @@ void setup() {
     disp.begin();
     Serial.println("[boot] display ok");
 
-    // Show boot screen
-    char buf[24];
-    snprintf(buf, sizeof(buf), "--:--:--");
-    disp.drawHeader(buf, 0.0, false);
-    disp.drawPages(store, 0);
-    disp.drawStatusBar(false, false, 0);
-    Serial.println("[boot] boot screen drawn");
+    disp.drawLogo();
+    Serial.println("[boot] logo drawn");
 
     WiFi.mode(WIFI_STA);
     WIFI_NETWORKS(wifiMulti);
@@ -198,6 +194,9 @@ void loop() {
         newPage = true;  // trigger redraw
     }
 
+    // Hold logo until first page arrives
+    if (bootScreen) return;
+
     // Redraw on new page or once per second for clock
     static unsigned long lastDraw = 0;
     bool tick = (millis() - lastDraw >= 1000);
@@ -215,7 +214,7 @@ void loop() {
 
         if (newPage) {
             disp.flashNew();
-            ledColor(false, true, false);  // green pulse
+            ledColor(false, true, false);
             delay(200);
             ledOff();
             store.markRead();
