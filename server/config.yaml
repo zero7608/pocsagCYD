@@ -1,0 +1,23 @@
+# POCSAG Publisher Configuration
+# Add as many frequencies as you like. The publisher cycles through them,
+# dwelling on each for `dwell_seconds` before retuning.
+# Find local freqs at: https://www.radioreference.com/db/browse/ctid/1898
+
+frequencies:
+  - 152.1200   # Lackawanna County Fire
+  - 152.8650   # Lackawanna County EMS
+  # - 155.3400
+  # - 159.1650
+
+dwell_seconds: 30      # seconds per frequency before hopping
+rtl_gain: 40           # RTL-SDR gain (0 = auto)
+rtl_ppm: 0             # frequency correction (ppm)
+rtl_device_index: 0    # RTL-SDR device index (0 = first device)
+
+# MQTT credentials are loaded from the .env file (see .env.example).
+# Only override here if not using .env.
+
+# Optional capcode filter — publish ONLY these capcodes (leave empty to publish all)
+capcode_filter: []
+  # - "1234567"
+  # - "7654321"
