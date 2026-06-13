@@ -6,7 +6,7 @@
 
 Pagers are not dead. Your local fire department, EMS, and probably a dozen other agencies you've never thought about are broadcasting their dispatches in plaintext over radio frequencies anyone can receive. No encryption. No subscription. No login required.
 
-I had an RTL-SDR collecting dust and a $15 ESP32 display I bought for a project I never started. This is what I did with them.
+I bought two of these displays. The first one runs ESP32 WiFi Marauder. The second was too good a deal to pass up and sat in a drawer until now. It has a job.
 
 ---
 
