@@ -171,7 +171,7 @@ def decode_locked(freq_mhz, cfg, mc):
         rtl = subprocess.Popen(rtl_cmd(freq_mhz, cfg),
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         mmng = subprocess.Popen(mmng_args, stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
         # Relay thread: rtl_fm → Python (measure RMS) → multimon-ng stdin.
         # Sets stop_relay when signal stays below threshold for squelch_hold seconds.
@@ -209,7 +209,7 @@ def decode_locked(freq_mhz, cfg, mc):
 
         def reader():
             for line in mmng.stdout:
-                line_q.put(line)
+                line_q.put(line.decode("utf-8", errors="replace"))
             line_q.put(None)
 
         threading.Thread(target=reader, daemon=True).start()
