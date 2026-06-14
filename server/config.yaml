@@ -22,9 +22,13 @@ scan_dwell_seconds: 0.4
 # Typical noise floor: 200-500. Active POCSAG signal: 1000-5000+.
 signal_threshold: 1200
 
-# How long to wait after the last decoded page before returning to scan.
-# Back-to-back dispatch batches (fire + EMS + mutual aid) can take 15-20s.
-silence_timeout: 15
+# How long the signal must stay below threshold before returning to scan.
+# Bridges brief gaps between pages in a batch (e.g. fire + EMS + mutual aid).
+squelch_hold_seconds: 2.0
+
+# Hard fallback: return to scan if locked for this many seconds with no decoded page.
+# Catches stuck carriers or non-POCSAG signals that triggered the lock.
+silence_timeout: 30
 
 rtl_gain: 0            # RTL-SDR gain (0 = auto)
 rtl_ppm: 0             # frequency correction (ppm)

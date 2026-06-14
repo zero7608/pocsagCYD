@@ -146,11 +146,17 @@ def scan_level(freq_mhz, cfg, duration=0.4):
 def decode_locked(freq_mhz, cfg, mc):
     """
     Tune to freq_mhz, decode POCSAG, publish to MQTT.
-    Returns when silence_timeout seconds pass without any multimon-ng output.
+
+    Audio is routed through Python so we can measure RMS in real time.
+    Exits as soon as signal drops below threshold for squelch_hold_seconds,
+    with silence_timeout as a hard fallback (e.g. stuck carrier).
     """
     capcode_filter = set(cfg.get("capcode_filter", []))
     topic = cfg["mqtt"]["topic"]
-    silence_timeout = cfg.get("silence_timeout", 8)
+    threshold = cfg.get("signal_threshold", 1200)
+    squelch_hold = cfg.get("squelch_hold_seconds", 2.0)
+    silence_timeout = cfg.get("silence_timeout", 30)
+    chunk_size = int(SAMPLE_RATE * 2 * 0.1)  # 100ms of audio per chunk
 
     mmng_args = [
         "multimon-ng", "-t", "raw",
@@ -159,15 +165,46 @@ def decode_locked(freq_mhz, cfg, mc):
     ]
 
     print(f"[LOCK] {freq_mhz} MHz — decoding", flush=True)
+    stop_relay = threading.Event()
+
     try:
         rtl = subprocess.Popen(rtl_cmd(freq_mhz, cfg),
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        mmng = subprocess.Popen(mmng_args, stdin=rtl.stdout,
+        mmng = subprocess.Popen(mmng_args, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        rtl.stdout.close()
 
-        # Read multimon-ng output in a background thread; main thread enforces
-        # the silence timeout via queue.get(timeout=...).
+        # Relay thread: rtl_fm → Python (measure RMS) → multimon-ng stdin.
+        # Sets stop_relay when signal stays below threshold for squelch_hold seconds.
+        def relay():
+            below_since = None
+            while not stop_relay.is_set():
+                data = rtl.stdout.read(chunk_size)
+                if not data:
+                    break
+                rms = audio_rms(data)
+                if rms < threshold:
+                    if below_since is None:
+                        below_since = time.monotonic()
+                    elif time.monotonic() - below_since >= squelch_hold:
+                        print(f"[LOCK] signal dropped on {freq_mhz} MHz — resuming scan",
+                              flush=True)
+                        stop_relay.set()
+                        break
+                else:
+                    below_since = None
+                try:
+                    mmng.stdin.write(data)
+                    mmng.stdin.flush()
+                except BrokenPipeError:
+                    break
+            try:
+                mmng.stdin.close()
+            except Exception:
+                pass
+
+        threading.Thread(target=relay, daemon=True).start()
+
+        # Decode thread: read multimon-ng output lines into a queue.
         line_q = queue.Queue()
 
         def reader():
@@ -177,13 +214,13 @@ def decode_locked(freq_mhz, cfg, mc):
 
         threading.Thread(target=reader, daemon=True).start()
 
-        last_activity = time.monotonic()
-        while True:
+        last_page = time.monotonic()
+        while not stop_relay.is_set():
             try:
-                line = line_q.get(timeout=1.0)
+                line = line_q.get(timeout=0.5)
             except queue.Empty:
-                if time.monotonic() - last_activity >= silence_timeout:
-                    print(f"[LOCK] {silence_timeout}s quiet on {freq_mhz} MHz — resuming scan",
+                if time.monotonic() - last_page >= silence_timeout:
+                    print(f"[LOCK] {silence_timeout}s fallback timeout on {freq_mhz} MHz",
                           flush=True)
                     break
                 continue
@@ -204,11 +241,12 @@ def decode_locked(freq_mhz, cfg, mc):
             mc.publish(topic, json.dumps(page), qos=0, retain=False)
             print(f"[PAGE] {page['ts_iso']}  cap={page['capcode']}  {page['msg'][:80]}",
                   flush=True)
-            last_activity = time.monotonic()
+            last_page = time.monotonic()
 
     except Exception as e:
         print(f"[LOCK] error on {freq_mhz} MHz: {e}", flush=True)
     finally:
+        stop_relay.set()
         for proc in (mmng, rtl):
             try:
                 proc.terminate()
