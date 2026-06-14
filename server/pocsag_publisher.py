@@ -7,8 +7,11 @@ and publishes each page as JSON to the configured MQTT topic.
 """
 
 import json
+import math
 import os
+import queue
 import re
+import struct
 import subprocess
 import sys
 import threading
@@ -93,84 +96,131 @@ def parse_line(line):
     }
 
 
-def run_frequency(freq_mhz, cfg, mc, stop_event):
-    gain = cfg.get("rtl_gain", 40)
-    ppm = cfg.get("rtl_ppm", 0)
-    dev = cfg.get("rtl_device_index", 0)
-    capcode_filter = set(cfg.get("capcode_filter", []))
-    topic = cfg["mqtt"]["topic"]
+SAMPLE_RATE = 22050  # rtl_fm output sample rate (Hz)
 
-    rtl_cmd = [
+
+def audio_rms(data):
+    """RMS amplitude of raw signed 16-bit PCM bytes from rtl_fm."""
+    n = len(data) // 2
+    if n == 0:
+        return 0.0
+    total = sum(struct.unpack_from("<h", data, i * 2)[0] ** 2 for i in range(n))
+    return math.sqrt(total / n)
+
+
+def rtl_cmd(freq_mhz, cfg):
+    return [
         "rtl_fm",
-        "-d", str(dev),
+        "-d", str(cfg.get("rtl_device_index", 0)),
         "-f", f"{freq_mhz}M",
-        "-s", "22050",
-        "-g", str(gain),
-        "-p", str(ppm),
+        "-s", str(SAMPLE_RATE),
+        "-g", str(cfg.get("rtl_gain", 0)),
+        "-p", str(cfg.get("rtl_ppm", 0)),
         "-E", "dc",
         "-",
     ]
-    mmng_cmd = [
-        "multimon-ng",
-        "-t", "raw",
-        "-a", "POCSAG512",
-        "-a", "POCSAG1200",
-        "-a", "POCSAG2400",
-        "-f", "alpha",
-        "-",
+
+
+def scan_level(freq_mhz, cfg, duration=0.4):
+    """Tune to freq for `duration` seconds and return audio RMS. 0.0 on error."""
+    # Bytes for `duration` seconds of signed 16-bit mono audio, plus a discard
+    # prefix for AGC settle time (~0.1s).
+    discard = int(SAMPLE_RATE * 2 * 0.1)
+    read_len = int(SAMPLE_RATE * 2 * duration)
+    try:
+        proc = subprocess.Popen(rtl_cmd(freq_mhz, cfg),
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        proc.stdout.read(discard)          # discard AGC settle
+        data = proc.stdout.read(read_len)
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        return audio_rms(data)
+    except Exception as e:
+        print(f"[SCAN] error {freq_mhz} MHz: {e}", flush=True)
+        return 0.0
+
+
+def decode_locked(freq_mhz, cfg, mc):
+    """
+    Tune to freq_mhz, decode POCSAG, publish to MQTT.
+    Returns when silence_timeout seconds pass without any multimon-ng output.
+    """
+    capcode_filter = set(cfg.get("capcode_filter", []))
+    topic = cfg["mqtt"]["topic"]
+    silence_timeout = cfg.get("silence_timeout", 8)
+
+    mmng_args = [
+        "multimon-ng", "-t", "raw",
+        "-a", "POCSAG512", "-a", "POCSAG1200", "-a", "POCSAG2400",
+        "-f", "alpha", "-",
     ]
 
-    print(f"[SDR] tuning {freq_mhz} MHz  gain={gain}  ppm={ppm}", flush=True)
-
+    print(f"[LOCK] {freq_mhz} MHz — decoding", flush=True)
     try:
-        rtl = subprocess.Popen(rtl_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        mmng = subprocess.Popen(
-            mmng_cmd, stdin=rtl.stdout, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True,
-        )
+        rtl = subprocess.Popen(rtl_cmd(freq_mhz, cfg),
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        mmng = subprocess.Popen(mmng_args, stdin=rtl.stdout,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         rtl.stdout.close()
 
-        while not stop_event.is_set():
-            line = mmng.stdout.readline()
-            if not line:
-                break
-            line = line.rstrip()
-            if not line:
+        # Read multimon-ng output in a background thread; main thread enforces
+        # the silence timeout via queue.get(timeout=...).
+        line_q = queue.Queue()
+
+        def reader():
+            for line in mmng.stdout:
+                line_q.put(line)
+            line_q.put(None)
+
+        threading.Thread(target=reader, daemon=True).start()
+
+        last_activity = time.monotonic()
+        while True:
+            try:
+                line = line_q.get(timeout=1.0)
+            except queue.Empty:
+                if time.monotonic() - last_activity >= silence_timeout:
+                    print(f"[LOCK] {silence_timeout}s quiet on {freq_mhz} MHz — resuming scan",
+                          flush=True)
+                    break
                 continue
 
-            page = parse_line(line)
-            if page is None:
+            if line is None:
+                break
+
+            page = parse_line(line.rstrip())
+            if not page or not page["msg"]:
                 continue
             if capcode_filter and page["capcode"] not in capcode_filter:
-                continue
-            if not page["msg"]:
                 continue
 
             page["freq_mhz"] = freq_mhz
             page["ts"] = int(datetime.now(timezone.utc).timestamp())
             page["ts_iso"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            payload = json.dumps(page)
-            mc.publish(topic, payload, qos=0, retain=False)
-            print(f"[PAGE] {page['ts_iso']}  cap={page['capcode']}  {page['msg'][:80]}", flush=True)
+            mc.publish(topic, json.dumps(page), qos=0, retain=False)
+            print(f"[PAGE] {page['ts_iso']}  cap={page['capcode']}  {page['msg'][:80]}",
+                  flush=True)
+            last_activity = time.monotonic()
 
     except Exception as e:
-        print(f"[SDR] error on {freq_mhz} MHz: {e}", flush=True)
+        print(f"[LOCK] error on {freq_mhz} MHz: {e}", flush=True)
     finally:
-        try:
-            mmng.terminate()
-        except Exception:
-            pass
-        try:
-            rtl.terminate()
-        except Exception:
-            pass
+        for proc in (mmng, rtl):
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
 
 def main():
     cfg = load_config()
     freqs = cfg.get("frequencies", [])
-    dwell = cfg.get("dwell_seconds", 30)
+    threshold = cfg.get("signal_threshold", 800)
+    scan_dwell = cfg.get("scan_dwell_seconds", 0.4)
 
     if not freqs:
         print("ERROR: no frequencies configured", flush=True)
@@ -179,18 +229,20 @@ def main():
     mc = make_mqtt_client(cfg)
     connect_mqtt(mc, cfg)
 
-    print(f"[POCSAG] monitoring {len(freqs)} freq(s), {dwell}s dwell each", flush=True)
+    print(f"[POCSAG] scanning {len(freqs)} freq(s)  threshold={threshold}  "
+          f"dwell={scan_dwell}s  silence={cfg.get('silence_timeout', 8)}s", flush=True)
 
     idx = 0
     while True:
         freq = freqs[idx % len(freqs)]
-        stop = threading.Event()
-        t = threading.Thread(target=run_frequency, args=(freq, cfg, mc, stop), daemon=True)
-        t.start()
-        time.sleep(dwell)
-        stop.set()
-        t.join(timeout=5)
-        idx += 1
+        rms = scan_level(freq, cfg, scan_dwell)
+        print(f"[SCAN] {freq} MHz  RMS={rms:.0f}", flush=True)
+
+        if rms >= threshold:
+            decode_locked(freq, cfg, mc)
+            # Re-scan the same frequency first — back-to-back pages are common
+        else:
+            idx += 1
 
 
 if __name__ == "__main__":

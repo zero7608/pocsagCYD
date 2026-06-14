@@ -1,16 +1,32 @@
 # POCSAG Publisher Configuration
-# Add as many frequencies as you like. The publisher cycles through them,
-# dwelling on each for `dwell_seconds` before retuning.
-# Find local freqs at: https://www.radioreference.com/db/browse/ctid/1898
+# Find local freqs at: https://www.radioreference.com/db/browse/ctid/2280
 
 frequencies:
-  - 157.4500   # County Fire & EMS Paging
-  - 154.3550   # Back Mountain Dispatch / Mutual Aid
-  - 155.9400   # Alternative/Supplemental Paging
-  - 154.4300   # County Fire Paging
+  - 157.4500   # LCFA Page — Fire & EMS Paging (primary)
+  - 155.9400   # WB Fire Disp — Wilkes-Barre Fire Dispatch
+  - 155.3250   # LCFA West / Nescopeck — Dispatch for Luzerne County
+  - 159.4650   # LCFA Primary — Luzerne County Fire & Ambulance
+  - 154.3550   # LCFA Back Mt — Back Mountain Mutual Aid
+  - 154.4150   # LCFA Mtn Top — Mountain Top Mutual Aid
 
-dwell_seconds: 30      # seconds per frequency before hopping
-rtl_gain: 40           # RTL-SDR gain (0 = auto)
+# Scanner settings
+# The scanner sweeps all frequencies quickly, listens for signal, then locks
+# on the active frequency to decode. When it goes quiet it resumes scanning.
+
+# How long to sample each frequency while scanning (seconds).
+# Shorter = faster scan rotation but more AGC settle overhead. 0.4 is a good default.
+scan_dwell_seconds: 0.4
+
+# Audio RMS threshold to consider a frequency "active". Run the container and watch
+# the [SCAN] log lines to see your noise floor, then set this above it.
+# Typical noise floor: 200-500. Active POCSAG signal: 1000-5000+.
+signal_threshold: 1200
+
+# How long to wait after the last decoded page before returning to scan.
+# Back-to-back dispatch batches (fire + EMS + mutual aid) can take 15-20s.
+silence_timeout: 15
+
+rtl_gain: 0            # RTL-SDR gain (0 = auto)
 rtl_ppm: 0             # frequency correction (ppm)
 rtl_device_index: 0    # RTL-SDR device index (0 = first device)
 
