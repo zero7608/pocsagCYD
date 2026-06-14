@@ -80,13 +80,38 @@ def connect_mqtt(mc, cfg):
             time.sleep(10)
 
 
+def clean_msg(raw):
+    # multimon-ng emits control chars as named tokens: <NUL>, <ESC>, <DC1>, etc.
+    msg = re.sub(r"<[A-Z][A-Z\d]{0,3}>", "", raw)
+    # Strip actual control bytes and non-ASCII that slipped through
+    msg = re.sub(r"[\x00-\x1f\x7f-\xff]", "", msg)
+    # Collapse whitespace
+    msg = re.sub(r"\s+", " ", msg).strip()
+    return msg
+
+
+def is_readable(msg, min_len=4):
+    """Return False for messages that are too short or look like garbage decodes."""
+    if len(msg) < min_len:
+        return False
+    # Alphanumeric + space must make up at least 60% of the message
+    alnum_space = sum(c.isalnum() or c == " " for c in msg)
+    if alnum_space / len(msg) < 0.60:
+        return False
+    # Characters that almost never appear in real pager text; two or more = garbage
+    soup = sum(1 for c in msg if c in set('{}|^~`\\=_<>;'))
+    if soup >= 2 and soup / len(msg) > 0.04:
+        return False
+    return True
+
+
 def parse_line(line):
     m = POCSAG_RE.search(line)
     if not m:
         return None
-    msg = m.group("msg").strip()
-    # multimon-ng pads short messages with <NUL> — strip control chars
-    msg = re.sub(r"[\x00-\x1f\x7f]", "", msg).strip()
+    msg = clean_msg(m.group("msg"))
+    if not is_readable(msg):
+        return None
     return {
         "baud": int(m.group("baud")),
         "capcode": m.group("capcode").lstrip("0") or "0",
